@@ -37,7 +37,7 @@ rmultinom = function(...) { # represented as integers in the matrix data
 true_next = function(data, treat_plan) {
   data_next = data
   data_next[,"L1"] = data[,"L1"] + rnorm(nrow(data), 0,1) + rep(1,nrow(data)) # disease progression
-  data_next[,"L2"] = data[,"L2"] # category of some kind
+  # data_next[,"L2"] = data[,"L2"] # category of some kind
   data_next[,"A"] = treat_plan(data)
   data_next[,"D"] = pmax(data[,"D"], rbinom(nrow(data),1, gtools::inv.logit(data[,"L1"]-10))) # p(death) increases with disease progression
   data_next[,"Y"] = (1-data[,"D"])*(1.1^(data[,"L1"] - 2*data[,"A"] + abs(rnorm(nrow(data), 0,1)))) # age increases cost
@@ -203,60 +203,60 @@ est_tau
 # est_tau_boot = 1:100 %>%
 #   future_map_dbl(~boot_causal_contrast(data, treat_all, treat_none))
 # var(est_tau_boot)
-
-gcomp_cost(data,
-  var_names = list(
-    t="t",
-    i="i",
-    Y="Y",
-    D = "D",
-    A = "A"),
-  model_specs = list(
-    L1 = linear_reg() %>% set_engine("lm"),
-    D = logistic_reg() %>% set_engine("glm"),
-    Y = rand_forest() %>% set_engine("ranger"),
-    default_numeric = linear_reg() %>% set_engine("lm"),
-    default_factor = logistic_reg() %>% set_engine("glm")
-  )
-)
-
-prep_data = function(data, var_names) {
-  data %>%
-    rename
-}
-
-prep_model_specs = function(data, model_specs) {
-
-}
-
-gcomp_cost(data, var_names) {
-  model = data %>%
-    make_model(model_spec)
-  model_next = model %>%
-    build_model_next(model_spec)
-  true_tau = causal_contrast(true_next, treat_all, treat_none)
-  est_tau = causal_contrast(model_next, treat_all, treat_none)
-
-  boot_causal_contrast = function(data, treat, control, ...) {
-    boot_data = data %>%
-      count(i) %>%
-      sample_n(nrow(.), replace = T) %>%
-      left_join(data, by="i")
-
-    data %>%
-      make_model(model_spec) %>%
-      build_model_next(model_spec) %>%
-      causal_contrast(treat, control, n, ...)
-  }
-
-  plan(multiprocess)
-  est_tau_boot = 1:100 %>%
-    future_map_dbl(~boot_causal_contrast(data, treat_all, treat_none))
-}
-
-gcomp_sim_test = function() {
-  data = sim_data(true_next, natural, n, tau, p=1)
-
-  return(true_tau, est_tau, var(est_tau_boot))
-}
-
+#
+# gcomp_cost(data,
+#   var_names = list(
+#     t="t",
+#     i="i",
+#     Y="Y",
+#     D = "D",
+#     A = "A"),
+#   model_specs = list(
+#     L1 = linear_reg() %>% set_engine("lm"),
+#     D = logistic_reg() %>% set_engine("glm"),
+#     Y = rand_forest() %>% set_engine("ranger"),
+#     default_numeric = linear_reg() %>% set_engine("lm"),
+#     default_factor = logistic_reg() %>% set_engine("glm")
+#   )
+# )
+#
+# prep_data = function(data, var_names) {
+#   data %>%
+#     rename
+# }
+#
+# prep_model_specs = function(data, model_specs) {
+#
+# }
+#
+# gcomp_cost(data, var_names) {
+#   model = data %>%
+#     make_model(model_spec)
+#   model_next = model %>%
+#     build_model_next(model_spec)
+#   true_tau = causal_contrast(true_next, treat_all, treat_none)
+#   est_tau = causal_contrast(model_next, treat_all, treat_none)
+#
+#   boot_causal_contrast = function(data, treat, control, ...) {
+#     boot_data = data %>%
+#       count(i) %>%
+#       sample_n(nrow(.), replace = T) %>%
+#       left_join(data, by="i")
+#
+#     data %>%
+#       make_model(model_spec) %>%
+#       build_model_next(model_spec) %>%
+#       causal_contrast(treat, control, n, ...)
+#   }
+#
+#   plan(multiprocess)
+#   est_tau_boot = 1:100 %>%
+#     future_map_dbl(~boot_causal_contrast(data, treat_all, treat_none))
+# }
+#
+# gcomp_sim_test = function() {
+#   data = sim_data(true_next, natural, n, tau, p=1)
+#
+#   return(true_tau, est_tau, var(est_tau_boot))
+# }
+#
