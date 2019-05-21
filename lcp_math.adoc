@@ -1,0 +1,64 @@
+= LCP
+Alejandro Schuler
+:stem:
+
+== The DGP and Model
+
+Let's assume a particular data-generating process. Let the latent survival time latexmath:[T_i \sim \text{Unif}(0,\tau)] and latent treatment time latexmath:[Z_i \sim \text{Unif}(0,\tau)]. If not treated, all patients cost $1 per unit time unless they are in the last latexmath:[\omega] time units of life, during which they cost $2 per unit time. Once treated, patients cost $1 per unit time from that time until they die.
+
+Following Lin 2003, our model for per-patient cost in a period of time latexmath:[(t_{k}, t_{k}+\Delta_k\]] is latexmath:[E[Y_{ik}|Z_{ik}=z_{ik}\] = \alpha_k + \beta_k z_{ik}] where latexmath:[Y_{ik}] is the cost accrued in the time interval and latexmath:[Z_{ik}] is an indicator for latexmath:[Z_i \le t_k].
+
+== Expectations under the DGP
+Using iterated expectation, we also have
+
+latexmath:[
+\begin{array}{rcccl}
+E[Y_{ik}|Z_{ik}\] & = & E[Y_{ik} | Z_{ik}, T_i < t_k\] & \times & P(T_i<t_k|Z_{ik}) \\\
+ & + & E[Y_{ik} | Z_{ik}, T_i-\omega < t_k \le T_i\] & \times & P(T_i-\omega < t_k \le T_i|Z_{ik}) \\\
+ & + & E[Y_{ik} | Z_{ik}, t_k \le T_i-\omega\] & \times & P(t_k \le T_i-\omega|Z_{ik})
+\end{array}
+]
+
+The first term latexmath:[E[Y_{ik} | Z_{ik}, T_i < t_k\] = 0] because dead patients do not accrue cost regardless of the treatment.
+
+Given our data-generating process, the relevant expectations are
+
+latexmath:[E[Y_{ik} | Z_{ik}=1, T_i-\omega < t_k \le T_i\] =  \Delta_k]
+
+latexmath:[E[Y_{ik} | Z_{ik}=0, T_i-\omega < t_k \le T_i\] = 2\Delta_k]
+
+latexmath:[E[Y_{ik} | Z_{ik}=1, t_k < T_i-\omega\] = \Delta_k]
+
+latexmath:[E[Y_{ik} | Z_{ik}=0, t_k < T_i-\omega\] = \Delta_k]
+
+Given the independence of latexmath:[Z_i] and latexmath:[T_i], the conditional probabilities latexmath:[P(f(T_i)|Z_i)] are the same as the marginal probabilities latexmath:[P(f(T_i))]. Letting latexmath:[h(x)] be the 0-1 clipping function latexmath:[h(x) = x \forall x \in [0,1\], 0 \forall x<0, 1 \forall x>1], we have from latexmath:[T_i \sim \text{Unif}(0,\tau)]:
+
+
+latexmath:[
+\begin{array}{lcl}
+P(t_k \le T_i-\omega|Z_{ik}=1) &=& \\\
+P(t_k \le T_i-\omega|Z_{ik}=0) &=& \\\
+P(t_k \le T_i-\omega) &=& h\left(\frac{\tau-(\omega+t_k)}{\tau}\right)
+\end{array}
+]
+
+latexmath:[
+\begin{array}{lcl}
+P(T_i-\omega < t_k \le T_i|Z_{ik}=1) &=& \\\
+P(T_i-\omega < t_k \le T_i|Z_{ik}=0) &=& \\\
+P(T_i-\omega < t_k \le T_i) &=& \frac{\tau - t_k}{\tau} - h\left(\frac{\tau-(\omega+t_k)}{\tau}\right)
+\end{array}
+]
+
+== Equating the DGP and Model Expectations
+
+Putting it together,
+
+latexmath:[
+\begin{array}{rcccl}
+\alpha_k &=& E[Y_{ik}|Z_{ik}=0\] &=& 2\Delta_k \left(\frac{\tau - t_k}{\tau} - h\left(\frac{\tau-(\omega+t_k)}{\tau}\right)\right) + \Delta_k h\left(\frac{\tau-(\omega+t_k)}{\tau}\right) \\\
+\alpha_k + \beta_k &=& E[Y_{ik}|Z_{ik}=1\] &=& \Delta_k  \left(\frac{\tau - t_k}{\tau} - h\left(\frac{\tau-(\omega+t_k)}{\tau}\right)\right) + \Delta_k h\left(\frac{\tau-(\omega+t_k)}{\tau}\right)
+\end{array}
+]
+
+Which shows latexmath:[\beta_k = -\Delta_k \left(\frac{\tau - t_k}{\tau} - h\left(\frac{\tau-(\omega+t_k)}{\tau}\right)\right)]. When latexmath:[t_k \in [\omega, \tau-\omega\]], this reduces to latexmath:[\beta_k = -\frac{\Delta_k \omega}{\tau}] so that latexmath:[\sum_k \beta_k \approx \sum_k -\frac{\Delta_k \omega}{\tau} = -\frac{\omega}{\tau} \sum_k \delta_k = -\omega], which in our simulation was 12 months. We also had the costs as $10 and $20, so multiplying by 10, we get an expected lifetime savings of $-120, which lines up with intution about the data-generating process.
