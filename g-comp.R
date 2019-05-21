@@ -8,6 +8,20 @@ as_factor.logical = function(lgl, ...) base::factor(lgl, levels=c("TRUE", "FALSE
 as_factor.default = function(x, ...) as.factor(x, ...)
 fct_to_lgl = function(x) as.logical(2-as.numeric(x)) # amazingly, 3x as fast as as.logical()
 
+rcategorical = function(n, p) { # returns a factor vector
+  mc2d::rmultinomial(n=n, size=1, prob=p) %>%
+    `==`(1) %>%
+    which(arr.ind = T) %>%
+    as_tibble() %>%
+    arrange(row) %>%
+    pull(col) %>%
+    as_factor()
+}
+
+rbernoulli = function(n,p) { # returns a factor vector
+  rcategorical(n, c(p,1-p))
+}
+
 # To do:
 # add multiple confounders to sim
 # functionalize naming
@@ -16,20 +30,15 @@ tau = 100 # months
 n = 1000
 p = 1
 
-natural = function(data) if_else(data[,"D"]==1, data[,"A"], pmax(data[,"A"], rbinom(nrow(data),1,0.05))) # 5% chance of being treated each interval, treatment carries over
+natural = function(data) if_else(data[,"D"]==1, data[,"A"], pmax(data[,"A"], rbernoulli(nrow(data),p=0.05))) # 5% chance of being treated each interval, treatment carries over
 treat_all = function(data) rep(1,nrow(data))
 treat_none = function(data) rep(0,nrow(data))
-
-rmultinom = function(...) { # represented as integers in the matrix data
-  data = stats::rmultinom(...)
-  which(data==1, arr.ind = T)[,1]
-}
 
 # true_init = function(treat_plan, n) {
 #   data = matrix(0, nrow=n, ncol=5)
 #   colnames(data) = c("L1", "L2", "A", "D", "Y")
 #   data[,"L1"] = rep(0, n)
-#   data[,"L2"] = rmultinom(n, 1, c(1, 1, 2))
+#   data[,"L2"] = rcategorical(n, 1, c(1, 1, 2))
 #   data[,"A"] = rep(0, n) # everyone starts not treated
 #   data[,"D"] =
 # }
@@ -39,7 +48,7 @@ true_next = function(data, treat_plan) {
   data_next[,"L1"] = data[,"L1"] + rnorm(nrow(data), 0,1) + rep(1,nrow(data)) # disease progression
   # data_next[,"L2"] = data[,"L2"] # category of some kind
   data_next[,"A"] = treat_plan(data)
-  data_next[,"D"] = pmax(data[,"D"], rbinom(nrow(data),1, gtools::inv.logit(data[,"L1"]-10))) # p(death) increases with disease progression
+  data_next[,"D"] = pmax(data[,"D"], rbernoulli(nrow(data), p=gtools::inv.logit(data[,"L1"]-10))) # p(death) increases with disease progression
   data_next[,"Y"] = (1-data[,"D"])*(1.1^(data[,"L1"] - 2*data[,"A"] + abs(rnorm(nrow(data), 0,1)))) # age increases cost
   data_next
 }
@@ -55,8 +64,12 @@ matrix_to_df = function(data_matrix, name) {
 }
 
 sim_data = function(sim_next, treat_plan, n, tau, p) {
-  data_array = array(0, c(n, tau, p+3)) # p Ls + A+ D+ Y
-  dimnames(data_array)[[3]] = c(str_c("L",1:p), "A", "D", "Y")
+  data_array = list(
+    A = matrix(logical(), n, tau),
+    D = matrix(logical(), n, tau)
+  )
+  # data_array = array(0, c(n, tau, p+3)) # p Ls + A+ D+ Y
+  # dimnames(data_array)[[3]] = c(str_c("L",1:p), "A", "D", "Y")
   for (t in 1:(tau-1)){
     data_array[,t+1,] = sim_next(data_array[,t,], treat_plan)
   }
@@ -141,9 +154,9 @@ sample_from = function(model, data) {
                   pull(.pred),
           sd = model$sd)
   } else {
-    rbinom(nrow(data), 1,
-          prob = predict(model, as_tibble(data), type="prob") %>%
-                  pull(.pred_TRUE))
+    rcategorical(nrow(data),
+               p = predict(model, as_tibble(data), type="prob") %>%
+                    pull(.pred_1))
   }
 }
 
