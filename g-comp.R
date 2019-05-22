@@ -23,47 +23,32 @@ rcategorical = function(n, p) { # returns a factor vector
 # add multiple confounders to sim
 # functionalize naming
 
-tau = 100 # months
-n = 1000
-p = 1
-
-natural = function(data) if_else(data[,"D"]==1, data[,"A"], pmax(data[,"A"], rbernoulli(nrow(data),p=0.05))) # 5% chance of being treated each interval, treatment carries over
-treat_all = function(data) rep(1,nrow(data))
-treat_none = function(data) rep(0,nrow(data))
-
+##### DGP ####
+n = 100 # months
 true_init = list(
   disease= rep(0, n),
-  grp = rcategorical(n, c(1, 1, 2)),
-  treatment = rep(F, n) %>% as_factor(), # everyone starts not treated
+  grp = rcategorical(n, c(1, 1, 2)) %>% as.character(),
+  treatment = rep(0, n), # everyone starts not treated
   death = rep(F, n),
   cost = rep(0,n)
 )
 
+natural_treatment = function(data) if_else(data[["death"]]==1,
+                                           data[["treatment"]],
+                                           pmax(data[["treatment"]],
+                                                purrr::rbernoulli(length(data[["treatment"]]), p=0.05))) # 5% chance of being treated each interval, treatment carries over
+
 true_next = function(data, treat_plan) {
+  n = length(data[[1]])
   data_next = data
-  data_next[["disease"]] = data[["disease"]] + rnorm(nrow(data), 0,1) + rep(1,nrow(data)) # disease progression
+  data_next[["disease"]] = data[["disease"]] + rnorm(n, 0,1) + rep(1,n) # disease progression
   data_next[["grp"]] = data[["grp"]] # category of some kind
   data_next[["treatment"]] = treat_plan(data)
-  data_next[["death"]] = pmax(data[["death"]], rbernoulli(nrow(data), p=gtools::inv.logit(data[["disease"]]-10))) # p(death) increases with disease progression
-  data_next[["cost"]] = (1-data[["death"]])*(1.1^(data[["disease"]] - 2*(data[["treatment"]]==1) + abs(rnorm(nrow(data), 0,1)))) # disease increases cost
+  data_next[["death"]] = pmax(data[["death"]], purrr::rbernoulli(n, p=gtools::inv.logit(data[["disease"]]-10))) # p(death) increases with disease progression
+  data_next[["cost"]] = (1-data[["death"]])*(1.1^(data[["disease"]] - 2*(data[["treatment"]]) + abs(rnorm(n, 0,1)))) # disease increases cost
   data_next
 }
-
-true_model_specs = list(
-  disease = linear_reg() %>%
-    set_engine("lm"),
-  grp = rand_forest() %>%
-    set_engine("ranger") %>%
-    set_mode("classification"),
-  treatment = logistic_reg() %>%
-    set_engine("glm"), # not actually used
-  death = logistic_reg() %>%
-    set_engine("glm"),
-  cost = rand_forest() %>%
-    set_engine("ranger") %>%
-    set_mode("regression")
-)
-
+##### DGP ####
 
 matrix_to_df = function(data_matrix, name) {
   as_tibble(data_matrix) %>%
@@ -79,17 +64,18 @@ at_time = function(data, t) {
   data %>% map(~.[,t])
 }
 
-prep_sim_data = function(data_init, n, tau) {
+prep_sim_data = function(data_init, tau) {
   data = list()
-  for (var in names(data_init)) {
-    if (is.numeric(data_init[[var]])) {
-      data[[var]] = matrix(double(), n, tau)
-    } else if (is.logical(data_init[[var]])) {
-      data[[var]] = matrix(logical(), n, tau)
+  n = length(data_init[[1]])
+  for (x in names(data_init)) {
+    if (is.numeric(data_init[[x]])) {
+      data[[x]] = matrix(double(), n, tau)
+    } else if (is.logical(data_init[[x]])) {
+      data[[x]] = matrix(logical(), n, tau)
     } else {
-      data[[var]] = matrix(integer(), n, tau)
+      data[[x]] = matrix(character(), n, tau)
     }
-    data[[var]][,1] = data_init[[var]]
+    data[[x]][,1] = data_init[[x]]
   }
   # data_array = model_specs %>%
   #   map_lgl(~.$mode == "regression") %>%
@@ -101,8 +87,8 @@ sim_data = function(sim_next, treat_plan, data) {
   tau = ncol(data[[1]])
   for (t in 1:(tau-1)){
     data_next = sim_next(at_time(data, t), treat_plan)
-    for (var in names(data)) {
-      data[[var]][,t+1] = data_next[[var]]
+    for (x in names(data)) {
+      data[[x]][,t+1] = data_next[[x]]
     }
   }
   data %>%
@@ -113,23 +99,35 @@ sim_data = function(sim_next, treat_plan, data) {
   #   reduce(inner_join, by=c("t","i"))
 }
 
-data = sim_data(true_next, natural, n, tau, p=1)
+data = sim_data(true_next, natural_treatment, prep_sim_data(true_init, 100))
+cols=list(time="t", obs="i", death="death")
 
-# references to "D" not good
-modeling_data = function(data, x) {
+modeling_data = function(data, x, cols=list(time="t", obs="i", death="D")) {
   data %>%
-    select(i,t,x=!!sym(x)) %>%
+    select(!!sym(cols$obs),!!sym(cols$time),x=!!sym(x)) %>%
     inner_join(data %>%
-                 filter(!D) %>%
+                 filter(!(!!sym(cols$death))) %>%
                  mutate(t=t+1), # put x(t+1) on the same row as x(t), z1(t), z2(t) etc.
-               by=c("t","i")) %>%
-    select(-t, -i, -D)
+               by=c(cols$obs, cols$time)) %>%
+    select(-!!sym(cols$obs), -!!sym(cols$time), -!!sym(cols$death))
 }
-# model_specs = list(
-#   "L1" = rand_forest() %>% set_engine("ranger") %>% set_mode("regression"),
-#   "D" = logistic_reg() %>% set_engine("glm"),
-#   "Y" = rand_forest() %>% set_engine("ranger") %>% set_mode("regression")
-# )
+
+# data %>% filter(i==1) %>%
+#   modeling_data("cost", cols)
+
+model_specs = list(
+  disease = rand_forest() %>%
+    set_engine("ranger") %>%
+    set_mode("regression"),
+  grp = rand_forest() %>%
+    set_engine("ranger") %>%
+    set_mode("classification"),
+  death = logistic_reg() %>%
+    set_engine("glm"),
+  cost = rand_forest() %>%
+    set_engine("ranger") %>%
+    set_mode("regression")
+)
 
 honest_sd = function(model, data) { # get an honest estimate of the sd that isn't biased by overfitting
   if (model$spec$engine == "glm" | model$spec$engine == "lm") {
@@ -161,9 +159,10 @@ add_element = function(obj, ...) {
   return(obj)
 }
 
-make_model = function(data, model_specs) {
+# add something to make this efficient for constant variables
+make_model = function(data, model_specs, cols) {
   model_specs %>% imap(function(model_spec, var_name) {
-    model_data = modeling_data(data, var_name)
+    model_data = modeling_data(data, var_name, cols)
     if (model_spec$mode == "regression") {
       model_spec %>%
         fit(x~., model_data) %>%
@@ -175,6 +174,9 @@ make_model = function(data, model_specs) {
   })
 }
 
+model = data %>%
+  make_model(model_specs, cols)
+
 sample_from = function(model, data) {
   if (model$spec$mode == "regression") {
     rnorm(nrow(data),
@@ -183,10 +185,11 @@ sample_from = function(model, data) {
           sd = model$sd)
   } else {
     rcategorical(nrow(data),
-               p = predict(model, as_tibble(data), type="prob") %>%
-                    pull(.pred_1))
+                 p = predict(model, as_tibble(data), type="prob"))
   }
 }
+
+p = predict(model, as_tibble(data), type="prob")
 
 build_model_next = function(model) {
   model = model
@@ -217,6 +220,9 @@ cost = function(data) {
 causal_contrast = function(sim_next, treat, control, n=1000, tau=100) {
   cost(sim_data(sim_next, treat, n, tau, p=1)) - cost(sim_data(sim_next, control, n, tau, p=1))
 }
+
+treat_all = function(data) rep(1,nrow(data))
+treat_none = function(data) rep(0,nrow(data))
 
 model = data %>%
   make_model(model_spec)
