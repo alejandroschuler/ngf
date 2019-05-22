@@ -1,4 +1,5 @@
 library(tidyverse)
+library(magrittr)
 library(broom)
 library(furrr)
 library(zeallot)
@@ -10,16 +11,12 @@ fct_to_lgl = function(x) as.logical(2-as.numeric(x)) # amazingly, 3x as fast as 
 
 rcategorical = function(n, p) { # returns a factor vector
   mc2d::rmultinomial(n=n, size=1, prob=p) %>%
-    `==`(1) %>%
+    equals(1) %>%
     which(arr.ind = T) %>%
     as_tibble() %>%
     arrange(row) %>%
     pull(col) %>%
     as_factor()
-}
-
-rbernoulli = function(n,p) { # returns a factor vector
-  rcategorical(n, c(p,1-p))
 }
 
 # To do:
@@ -34,24 +31,39 @@ natural = function(data) if_else(data[,"D"]==1, data[,"A"], pmax(data[,"A"], rbe
 treat_all = function(data) rep(1,nrow(data))
 treat_none = function(data) rep(0,nrow(data))
 
-# true_init = function(treat_plan, n) {
-#   data = matrix(0, nrow=n, ncol=5)
-#   colnames(data) = c("L1", "L2", "A", "D", "Y")
-#   data[,"L1"] = rep(0, n)
-#   data[,"L2"] = rcategorical(n, 1, c(1, 1, 2))
-#   data[,"A"] = rep(0, n) # everyone starts not treated
-#   data[,"D"] =
-# }
+true_init = list(
+  disease= rep(0, n),
+  grp = rcategorical(n, c(1, 1, 2)),
+  treatment = rep(F, n) %>% as_factor(), # everyone starts not treated
+  death = rep(F, n),
+  cost = rep(0,n)
+)
 
 true_next = function(data, treat_plan) {
   data_next = data
-  data_next[,"L1"] = data[,"L1"] + rnorm(nrow(data), 0,1) + rep(1,nrow(data)) # disease progression
-  # data_next[,"L2"] = data[,"L2"] # category of some kind
-  data_next[,"A"] = treat_plan(data)
-  data_next[,"D"] = pmax(data[,"D"], rbernoulli(nrow(data), p=gtools::inv.logit(data[,"L1"]-10))) # p(death) increases with disease progression
-  data_next[,"Y"] = (1-data[,"D"])*(1.1^(data[,"L1"] - 2*data[,"A"] + abs(rnorm(nrow(data), 0,1)))) # age increases cost
+  data_next[["disease"]] = data[["disease"]] + rnorm(nrow(data), 0,1) + rep(1,nrow(data)) # disease progression
+  data_next[["grp"]] = data[["grp"]] # category of some kind
+  data_next[["treatment"]] = treat_plan(data)
+  data_next[["death"]] = pmax(data[["death"]], rbernoulli(nrow(data), p=gtools::inv.logit(data[["disease"]]-10))) # p(death) increases with disease progression
+  data_next[["cost"]] = (1-data[["death"]])*(1.1^(data[["disease"]] - 2*(data[["treatment"]]==1) + abs(rnorm(nrow(data), 0,1)))) # disease increases cost
   data_next
 }
+
+true_model_specs = list(
+  disease = linear_reg() %>%
+    set_engine("lm"),
+  grp = rand_forest() %>%
+    set_engine("ranger") %>%
+    set_mode("classification"),
+  treatment = logistic_reg() %>%
+    set_engine("glm"), # not actually used
+  death = logistic_reg() %>%
+    set_engine("glm"),
+  cost = rand_forest() %>%
+    set_engine("ranger") %>%
+    set_mode("regression")
+)
+
 
 matrix_to_df = function(data_matrix, name) {
   as_tibble(data_matrix) %>%
@@ -63,19 +75,42 @@ matrix_to_df = function(data_matrix, name) {
     select(-trash)
 }
 
-sim_data = function(sim_next, treat_plan, n, tau, p) {
-  data_array = list(
-    A = matrix(logical(), n, tau),
-    D = matrix(logical(), n, tau)
-  )
-  # data_array = array(0, c(n, tau, p+3)) # p Ls + A+ D+ Y
-  # dimnames(data_array)[[3]] = c(str_c("L",1:p), "A", "D", "Y")
-  for (t in 1:(tau-1)){
-    data_array[,t+1,] = sim_next(data_array[,t,], treat_plan)
+at_time = function(data, t) {
+  data %>% map(~.[,t])
+}
+
+prep_sim_data = function(data_init, n, tau) {
+  data = list()
+  for (var in names(data_init)) {
+    if (is.numeric(data_init[[var]])) {
+      data[[var]] = matrix(double(), n, tau)
+    } else if (is.logical(data_init[[var]])) {
+      data[[var]] = matrix(logical(), n, tau)
+    } else {
+      data[[var]] = matrix(integer(), n, tau)
+    }
+    data[[var]][,1] = data_init[[var]]
   }
-  dimnames(data_array)[[3]] %>%
-    map(~matrix_to_df(data_array[,,.], .)) %>%
+  # data_array = model_specs %>%
+  #   map_lgl(~.$mode == "regression") %>%
+  #   if_else(list(matrix(double(), n, tau)), list(matrix(factor(), n, tau)))
+  return(data)
+}
+
+sim_data = function(sim_next, treat_plan, data) {
+  tau = ncol(data[[1]])
+  for (t in 1:(tau-1)){
+    data_next = sim_next(at_time(data, t), treat_plan)
+    for (var in names(data)) {
+      data[[var]][,t+1] = data_next[[var]]
+    }
+  }
+  data %>%
+    imap(matrix_to_df)%>%
     reduce(inner_join, by=c("t","i"))
+  # dimnames(data_array)[[3]] %>%
+  #   map(~matrix_to_df(data_array[,,.], .)) %>%
+  #   reduce(inner_join, by=c("t","i"))
 }
 
 data = sim_data(true_next, natural, n, tau, p=1)
@@ -90,13 +125,6 @@ modeling_data = function(data, x) {
                by=c("t","i")) %>%
     select(-t, -i, -D)
 }
-
-model_specs = list(
-  "L1" = linear_reg() %>% set_engine("lm"),
-  "D" = logistic_reg() %>% set_engine("glm"),
-  "Y" = rand_forest() %>% set_engine("ranger")
-)
-
 # model_specs = list(
 #   "L1" = rand_forest() %>% set_engine("ranger") %>% set_mode("regression"),
 #   "D" = logistic_reg() %>% set_engine("glm"),
