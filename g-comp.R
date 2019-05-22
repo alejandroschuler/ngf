@@ -10,13 +10,14 @@ as_factor.default = function(x, ...) as.factor(x, ...)
 fct_to_lgl = function(x) as.logical(2-as.numeric(x)) # amazingly, 3x as fast as as.logical()
 
 rcategorical = function(n, p) { # returns a factor vector
-  mc2d::rmultinomial(n=n, size=1, prob=p) %>%
+  mc2d::rmultinomial(n=n, size=1, prob=as.matrix(p)) %>%
     equals(1) %>%
     which(arr.ind = T) %>%
     as_tibble() %>%
     arrange(row) %>%
     pull(col) %>%
-    as_factor()
+    as_factor() %>%
+    recode(!!!set_names(names(p), 1:length(p)))
 }
 
 # To do:
@@ -27,7 +28,7 @@ rcategorical = function(n, p) { # returns a factor vector
 n = 100 # months
 true_init = list(
   disease= rep(0, n),
-  grp = rcategorical(n, c(1, 1, 2)) %>% as.character(),
+  grp = rcategorical(n, tibble(a=1, b=1, c=2)) %>% as.character(),
   treatment = rep(0, n), # everyone starts not treated
   death = rep(F, n),
   cost = rep(0,n)
@@ -100,7 +101,12 @@ sim_data = function(sim_next, treat_plan, data) {
 }
 
 data = sim_data(true_next, natural_treatment, prep_sim_data(true_init, 100))
-cols=list(time="t", obs="i", death="death")
+cols=list(
+  time="t",
+  obs="i",
+  treatment="treatment",
+  death="death",
+  cost="cost")
 
 modeling_data = function(data, x, cols=list(time="t", obs="i", death="D")) {
   data %>%
@@ -169,7 +175,7 @@ make_model = function(data, model_specs, cols) {
         add_element(sd=honest_sd(., model_data))
     } else {
       model_spec %>%
-        fit(x~., mutate(model_data, x=as_factor(x==1)))
+        fit(x~., mutate(model_data, x=as_factor(x)))
     }
   })
 }
@@ -185,26 +191,29 @@ sample_from = function(model, data) {
           sd = model$sd)
   } else {
     rcategorical(nrow(data),
-                 p = predict(model, as_tibble(data), type="prob"))
+                 p = predict(model, as_tibble(data), type="prob") %>%
+                    rename_all(str_extract, "(?<=_).*$"))
   }
 }
 
-p = predict(model, as_tibble(data), type="prob")
+p = predict(model$grp, data, type="prob")
 
-build_model_next = function(model) {
+function(fct, )
+
+build_model_next = function(model, cols, death_level) {
   model = model
   function(data, treat_plan) {
     data_next = data
     for (x in names(model)) {
-      if (x == "D") { # to keep people dead
-        data_next[,x] = pmax(data[,x], sample_from(model[[x]], data))
-      } else if (x == "Y") { # to make costs 0 for the dead
-        data_next[,x] = (1-data[,"D"]) * sample_from(model[[x]], data)
+      if (x == cols$death) { # to keep people dead
+        data_next[[x]] = pmax(data[[x]], sample_from(model[[x]], data))
+      } else if (x == cols$cost) { # to make costs 0 for the dead
+        data_next[[x]] = !(data[[cols$death]]==death_level) * sample_from(model[[x]], data)
       } else {
-        data_next[,x] = sample_from(model[[x]], data)
+        data_next[[x]] = sample_from(model[[x]], data)
       }
     }
-    data_next[,"A"] = treat_plan(data)
+    data_next[[cols$treatment]] = treat_plan(data)
     return(data_next)
   }
 }
