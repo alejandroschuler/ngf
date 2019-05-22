@@ -9,53 +9,22 @@ as_factor.logical = function(lgl, ...) base::factor(lgl, levels=c("TRUE", "FALSE
 as_factor.default = function(x, ...) as.factor(x, ...)
 fct_to_lgl = function(x) as.logical(2-as.numeric(x)) # amazingly, 3x as fast as as.logical()
 
-rcategorical = function(n, p) { # returns a factor vector
+rcategorical = function(n, p) { # returns a character vector (more portable than factor...)
   mc2d::rmultinomial(n=n, size=1, prob=as.matrix(p)) %>%
     equals(1) %>%
     which(arr.ind = T) %>%
     as_tibble() %>%
     arrange(row) %>%
     pull(col) %>%
-    as_factor() %>%
+    as.character() %>%
     recode(!!!set_names(names(p), 1:length(p)))
 }
-
-# To do:
-# add multiple confounders to sim
-# functionalize naming
-
-##### DGP ####
-n = 100 # months
-true_init = list(
-  disease= rep(0, n),
-  grp = rcategorical(n, tibble(a=1, b=1, c=2)) %>% as.character(),
-  treatment = rep(0, n), # everyone starts not treated
-  death = rep(F, n),
-  cost = rep(0,n)
-)
-
-natural_treatment = function(data) if_else(data[["death"]]==1,
-                                           data[["treatment"]],
-                                           pmax(data[["treatment"]],
-                                                purrr::rbernoulli(length(data[["treatment"]]), p=0.05))) # 5% chance of being treated each interval, treatment carries over
-
-true_next = function(data, treat_plan) {
-  n = length(data[[1]])
-  data_next = data
-  data_next[["disease"]] = data[["disease"]] + rnorm(n, 0,1) + rep(1,n) # disease progression
-  data_next[["grp"]] = data[["grp"]] # category of some kind
-  data_next[["treatment"]] = treat_plan(data)
-  data_next[["death"]] = pmax(data[["death"]], purrr::rbernoulli(n, p=gtools::inv.logit(data[["disease"]]-10))) # p(death) increases with disease progression
-  data_next[["cost"]] = (1-data[["death"]])*(1.1^(data[["disease"]] - 2*(data[["treatment"]]) + abs(rnorm(n, 0,1)))) # disease increases cost
-  data_next
-}
-##### DGP ####
 
 matrix_to_df = function(data_matrix, name) {
   as_tibble(data_matrix) %>%
     set_names(str_c("t",1:ncol(.),sep="_")) %>%
-    mutate(i=1:nrow(.)) %>%
-    gather(t, !!name, -i) %>%
+    mutate(obs=1:nrow(.)) %>%
+    gather(t, !!name, -obs) %>%
     separate(t, into=c("trash","t"), sep="_") %>%
     mutate(t=as.integer(t)) %>%
     select(-trash)
@@ -65,7 +34,10 @@ at_time = function(data, t) {
   data %>% map(~.[,t])
 }
 
-prep_sim_data = function(data_init, tau) {
+prep_sim_data = function(data_init, tau, n=nrow(data_init), sample=T) {
+  if (sample) {
+    data_init = sample_n(data_init, n, replace = T)
+  }
   data = list()
   n = length(data_init[[1]])
   for (x in names(data_init)) {
@@ -87,28 +59,21 @@ prep_sim_data = function(data_init, tau) {
 sim_data = function(sim_next, treat_plan, data) {
   tau = ncol(data[[1]])
   for (t in 1:(tau-1)){
-    data_next = sim_next(at_time(data, t), treat_plan)
+    data_next = sim_next(at_time(data, t), treat_plan, cols)
     for (x in names(data)) {
       data[[x]][,t+1] = data_next[[x]]
     }
   }
   data %>%
     imap(matrix_to_df)%>%
-    reduce(inner_join, by=c("t","i"))
+    reduce(inner_join, by=c("t","obs")) # %>%
+    # mutate_if(is.character, as_factor)
   # dimnames(data_array)[[3]] %>%
   #   map(~matrix_to_df(data_array[,,.], .)) %>%
   #   reduce(inner_join, by=c("t","i"))
 }
 
-data = sim_data(true_next, natural_treatment, prep_sim_data(true_init, 100))
-cols=list(
-  time="t",
-  obs="i",
-  treatment="treatment",
-  death="death",
-  cost="cost")
-
-modeling_data = function(data, x, cols=list(time="t", obs="i", death="D")) {
+modeling_data = function(data, x, cols) {
   data %>%
     select(!!sym(cols$obs),!!sym(cols$time),x=!!sym(x)) %>%
     inner_join(data %>%
@@ -117,23 +82,6 @@ modeling_data = function(data, x, cols=list(time="t", obs="i", death="D")) {
                by=c(cols$obs, cols$time)) %>%
     select(-!!sym(cols$obs), -!!sym(cols$time), -!!sym(cols$death))
 }
-
-# data %>% filter(i==1) %>%
-#   modeling_data("cost", cols)
-
-model_specs = list(
-  disease = rand_forest() %>%
-    set_engine("ranger") %>%
-    set_mode("regression"),
-  grp = rand_forest() %>%
-    set_engine("ranger") %>%
-    set_mode("classification"),
-  death = logistic_reg() %>%
-    set_engine("glm"),
-  cost = rand_forest() %>%
-    set_engine("ranger") %>%
-    set_mode("regression")
-)
 
 honest_sd = function(model, data) { # get an honest estimate of the sd that isn't biased by overfitting
   if (model$spec$engine == "glm" | model$spec$engine == "lm") {
@@ -180,35 +128,36 @@ make_model = function(data, model_specs, cols) {
   })
 }
 
-model = data %>%
-  make_model(model_specs, cols)
-
 sample_from = function(model, data) {
+  n = length(data[[1]])
   if (model$spec$mode == "regression") {
-    rnorm(nrow(data),
-          mean = predict(model, as_tibble(data)) %>%
-                  pull(.pred),
-          sd = model$sd)
+    rnorm(n,
+      mean = predict(model, as_tibble(data)) %>%
+        pull(.pred),
+      sd = model$sd)
   } else {
-    rcategorical(nrow(data),
-                 p = predict(model, as_tibble(data), type="prob") %>%
-                    rename_all(str_extract, "(?<=_).*$"))
+    rcategorical(n,
+      p = predict(model, as_tibble(data), type="prob") %>%
+        rename_all(str_extract, "(?<=_).*$"))
   }
 }
 
-p = predict(model$grp, data, type="prob")
+carry_death = function(old_dead, new_dead, death_levels) {
+  pmax(old_dead==death_levels$dead, new_dead==death_levels$dead) %>%
+    as.logical() %>%
+    if_else(death_levels$dead, death_levels$life)
+}
 
-function(fct, )
-
-build_model_next = function(model, cols, death_level) {
-  model = model
-  function(data, treat_plan) {
+# change this to fork at dead/not dead so prediction doesn't have to happen for anyone who's dead already
+build_sampler = function(model, cols, death_levels=list(dead="TRUE", life="FALSE")) {
+  model = model # weird but doesn't work without this.
+  function(data, treat_plan, cols) {
     data_next = data
     for (x in names(model)) {
       if (x == cols$death) { # to keep people dead
-        data_next[[x]] = pmax(data[[x]], sample_from(model[[x]], data))
+        data_next[[x]] = carry_death(data[[x]], sample_from(model[[x]], data), death_levels)
       } else if (x == cols$cost) { # to make costs 0 for the dead
-        data_next[[x]] = !(data[[cols$death]]==death_level) * sample_from(model[[x]], data)
+        data_next[[x]] = (1-(data[[cols$death]]==death_levels$dead)) * sample_from(model[[x]], data)
       } else {
         data_next[[x]] = sample_from(model[[x]], data)
       }
@@ -218,30 +167,94 @@ build_model_next = function(model, cols, death_level) {
   }
 }
 
-cost = function(data) {
+cost = function(data, cols) {
   data %>%
     group_by(t) %>%
-    summarize(Y_monthly_mean = mean(Y)) %>%
+    summarize(Y_monthly_mean = mean(!!sym(cols$cost))) %>%
     pull(Y_monthly_mean) %>%
     sum()
 }
 
-causal_contrast = function(sim_next, treat, control, n=1000, tau=100) {
-  cost(sim_data(sim_next, treat, n, tau, p=1)) - cost(sim_data(sim_next, control, n, tau, p=1))
+causal_contrast = function(sim_next, init_data, cols, treat, control) {
+  costs = list(treat=treat, control=control) %>%
+    map(~cost(sim_data(sim_next, ., init_data), cols)) %$%
+    {treat - control}
 }
 
-treat_all = function(data) rep(1,nrow(data))
-treat_none = function(data) rep(0,nrow(data))
+##### DGP ####
+n = 100
+true_init = tibble(
+  disease= rep(0, n),
+  grp = rcategorical(n, tibble(a=1, b=1, c=2)),
+  treatment = rep(0, n), # everyone starts not treated
+  death = rep(F, n),
+  cost = rep(0,n)
+)
 
-model = data %>%
-  make_model(model_spec)
-model_next = model %>%
-  build_model_next()
-true_tau = causal_contrast(true_next, treat_all, treat_none)
-est_tau = causal_contrast(model_next, treat_all, treat_none)
+natural_treatment = function(data) if_else(data[["death"]]==1,
+                                           data[["treatment"]],
+                                           pmax(data[["treatment"]],
+                                                purrr::rbernoulli(length(data[["treatment"]]), p=0.05))) # 5% chance of being treated each interval, treatment carries over
+
+true_transition_sampler = function(data, treat_plan, cols) {
+  n = length(data[[1]])
+  data_next = data
+  data_next[["disease"]] = data[["disease"]] + rnorm(n, 0,1) + rep(1,n) # disease progression
+  data_next[["grp"]] = data[["grp"]] # category of some kind
+  data_next[["treatment"]] = treat_plan(data)
+  data_next[["death"]] = pmax(data[["death"]], purrr::rbernoulli(n, p=gtools::inv.logit(data[["disease"]]-10))) %>% as.logical() # p(death) increases with disease progression
+  data_next[["cost"]] = (1-data[["death"]])*(1.1^(data[["disease"]] - 2*(data[["treatment"]]) + abs(rnorm(n, 0,1)))) # disease increases cost
+  data_next
+}
+##### DGP ####
+
+##### Testing data ####
+data = sim_data(true_next, natural_treatment, prep_sim_data(true_init, 24))
+
+##### Testing code
+tau = 24
+
+model_specs = list(
+  disease = rand_forest() %>%
+    set_engine("ranger") %>%
+    set_mode("regression"),
+  grp = rand_forest() %>%
+    set_engine("ranger") %>%
+    set_mode("classification"),
+  death = logistic_reg() %>%
+    set_engine("glm"),
+  cost = rand_forest() %>%
+    set_engine("ranger") %>%
+    set_mode("regression")
+)
+
+cols=list(
+  time="t",
+  obs="obs",
+  covariates = c("grp","disease"),
+  treatment="treatment",
+  death="death",
+  cost="cost")
+
+transition_model = data %>%
+  make_model(model_specs, cols)
+transition_sampler = model %>%
+  build_sampler(cols, death_levels = list(dead="TRUE", life="FALSE"))
+init_data = data %>%
+  filter(t==min(t)) %>%
+  select(cols %$% c(covariates, treatment, death, cost)) %>%
+  prep_sim_data(tau=tau, n=100)
+
+treat_all = function(data) rep(1,length(data[[1]]))
+treat_none = function(data) rep(0,length(data[[1]]))
+
+true_tau = causal_contrast(true_transition_sampler, init_data, cols, treat_all, treat_none)
+est_tau = causal_contrast(transition_sampler, init_data, cols, treat_all, treat_none)
 
 true_tau
 est_tau
+
+
 
 # boot_causal_contrast = function(data, treat, control, ...) {
 #   boot_data = data %>%
@@ -251,7 +264,7 @@ est_tau
 #
 #   data %>%
 #     make_model(model_spec) %>%
-#     build_model_next(model_spec) %>%
+#     build_sampler(model_spec) %>%
 #     causal_contrast(treat, control, n, ...)
 # }
 #
@@ -289,7 +302,7 @@ est_tau
 #   model = data %>%
 #     make_model(model_spec)
 #   model_next = model %>%
-#     build_model_next(model_spec)
+#     build_sampler(model_spec)
 #   true_tau = causal_contrast(true_next, treat_all, treat_none)
 #   est_tau = causal_contrast(model_next, treat_all, treat_none)
 #
@@ -301,7 +314,7 @@ est_tau
 #
 #     data %>%
 #       make_model(model_spec) %>%
-#       build_model_next(model_spec) %>%
+#       build_sampler(model_spec) %>%
 #       causal_contrast(treat, control, n, ...)
 #   }
 #
