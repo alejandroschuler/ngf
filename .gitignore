@@ -1,2 +1,5 @@
 .docx
 .html
+*.sas7bdat
+.DS_Store
+.DS_Store
