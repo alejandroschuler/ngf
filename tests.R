@@ -41,24 +41,21 @@ model_specs = list(
     set_engine("ranger") %>%
     set_mode("regression"),
   grp = static(),
-  death = logistic_reg() %>%
-    set_engine("glm"),
+  death = rand_forest() %>%
+    set_engine("ranger") %>%
+    set_mode("classification"),
   cost = rand_forest() %>%
     set_engine("ranger") %>%
     set_mode("regression")
 )
 
-var_specs=list(
+var_specs=make_var_spec(
   time="t", # time and obs are only used by data making for model fitting
-  obs="obs",
+  observation = "obs",
   covariates = c("grp", "disease"),
   treatment="treatment",
   death="death", # this is needed for data making too though
   cost="cost")
-
-death_levels = list(
-  dead="TRUE",
-  life="FALSE")
 
 # make the definition of these functions clearer
 treat_all = function(data) rep(1,length(data[[1]]))
@@ -76,7 +73,7 @@ true_delta = list(
 # try with RF for all models
 plan(multiprocess)
 tic()
-delta = ngf_cost_spec(var_specs, model_specs, death_levels) %>%
-  estimate(data, treat_all, treat_none, B=100, n=10000)
+delta = ngf_cost_spec(var_specs, model_specs, dead_level="TRUE") %>%
+  estimate(data, treat_all, treat_none, B=100, n=1000)
 toc()
 

@@ -1,6 +1,9 @@
 # user-facing functions
 
-var_spec = function(time=NULL, observation=NULL, covariates=NULL, treatment=NULL, death=NULL, cost=NULL) {
+# To do:
+# - Docs
+
+make_var_spec = function(time=NULL, observation=NULL, covariates=NULL, treatment=NULL, death=NULL, cost=NULL) {
   if (list(time, observation, treatment, death, cost) %>%
       map_lgl(is.null) %>%
       any()) {
@@ -16,10 +19,22 @@ var_spec = function(time=NULL, observation=NULL, covariates=NULL, treatment=NULL
     purrr::discard(is.null)
 }
 
-# add an input checker/clearner
-# add default model specs (glms) there
-# check all entries in var_spec have an entry in model_spec, except trt, t, and obs
-validate_ngf_cost_spec = function(x=list()) {
+validate_ngf_cost_spec = function(x = list()) {
+  x$var_spec = exec(make_var_spec, !!!(x$var_spec)) # checks that the right variables are here and named correctly
+  needed_model_names = x$var_spec %>%
+    extract(!(names(.) %in% c("time","observation","treatment"))) %>%
+    unlist()
+  if (is.null(x$model_spec)) {
+    warning("No model specification provided. Defaulting to GLMs")
+    x$model_spec = list(
+      logistic_reg() %>% set_engine("glm"),
+      linear_reg() %>% set_engine("lm")) %>%
+    set_names(x$var_spec[c("death","cost")])
+  }
+  # check mode of death is classification and mode of cost is regression
+  if (any(!(names(x$model_spec) %in% unlist(x$var_spec)))) {
+    rlang::abort("Variables in the model spec are not identified in the variable spec")
+  }
   x
 }
 
@@ -28,20 +43,63 @@ new_ngf_cost_spec = function(x = list()) {
   structure(x, class="ngf_cost_spec")
 }
 
-ngf_cost_spec = function(var_spec, model_spec, death_levels) {
+ngf_cost_spec = function(var_spec, model_spec=NULL, dead_level=NULL) {
   obj = new_ngf_cost_spec(list(
     var_spec=var_spec,
     model_spec=model_spec,
-    death_levels=death_levels))
+    dead_level=dead_level))
   validate_ngf_cost_spec(obj)
 }
 
-# build default death_levels from unique vals of death col if not already defined
+check_data = function(spec_obj, data) {
+  death_col = data %>%
+    pull(spec_obj$var_spec$death)
+  if (length(unique(death_col)) > 2) {
+    rlang::abort("Death column has more than two unique values")
+  }
+  cost_col = data %>%
+    pull(spec_obj$var_spec$cost)
+  if (!is.numeric(cost_col)) {
+    rlang::abort("Cost column is not numeric")
+  }
+
+  if (any(!(unlist(spec_obj$var_spec) %in% names(data)))) {
+    rlang::abort("Some variables in the variable spec are not found as column names in the data")
+  }
+
+  if (is.null(spec_obj$dead_level)) {
+    rlang::warn("No death level provided, guessing based on data")
+    life_level = first(death_col)
+    spec_obj$dead_level = unique(death_col) %>%
+      purrr::discard(~equals(.,life_level))  %>%
+      as.character()
+  }
+
+  # guess model specs for covariates  based on data type
+  for (covariate in spec_obj$var_spec$covariates) {
+    if (is.null(spec_obj$model_spec[[covariate]])) {
+      rlang::warn(str_c("No model spec provided for ", covariate))
+      if (is.numeric(data[[covariate]]))  {
+        rlang::warn("Defaulting to linear regression based on datatype")
+        spec_obj$model_spec[[covariate]] = linear_reg() %>% set_engine("lm")
+      } else {
+        rlang::warn("Defaulting to logistic regression based on datatype")
+        # Make sure this works for multiclass regression?
+        spec_obj$model_spec[[covariate]] = logistic_reg() %>% set_engine("glm")
+      }
+    }
+  }
+
+  return(spec_obj)
+}
+
 fit.ngf_cost_spec = function(obj, data) {
+  obj = check_data(obj, data)
+
   transition_model = data %>%
     make_model(obj$model_spec, obj$var_spec)
   transition_sampler = transition_model %>%
-    build_sampler(obj$var_spec, obj$death_levels)
+    build_sampler(obj$var_spec, obj$dead_level)
   t0_data = data %>%
     filter(!!sym(obj$var_spec$time)==min(!!sym(obj$var_spec$time))) %>%
     select(obj$var_spec %$% c(covariates, treatment, death, cost))
@@ -83,7 +141,8 @@ estimate = function(spec, data, treat, control, B=100, alpha=0.95, ...) {
     })
   list(
     estimate = delta,
-    conf_int = 2*delta - quantile(boot_est, (1+c(alpha, -alpha))/2)
+    conf_int = 2*delta - quantile(boot_est, (1+c(-alpha, alpha))/2) %>%
+      set_names(rev(names(.)))
   )
 }
 

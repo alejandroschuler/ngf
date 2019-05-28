@@ -5,6 +5,16 @@ library(furrr)
 library(zeallot)
 library(tidymodels)
 
+# To do:
+# - make sure these run with no covariates
+
+add_element = function(obj, ...) {
+  obj_class = class(obj)
+  obj = c(obj, ...)
+  class(obj) = obj_class
+  return(obj)
+}
+
 as_factor.logical = function(lgl, ...) base::factor(lgl, levels=c("TRUE", "FALSE"), ...)
 as_factor.default = function(x, ...) as.factor(x, ...)
 fct_to_lgl = function(x) as.logical(2-as.numeric(x)) # amazingly, 3x as fast as as.logical()
@@ -74,12 +84,12 @@ sim_data = function(data, transition_sampler, treat_plan) {
 
 modeling_data = function(data, x, var_specs) {
   data %>%
-    select(!!sym(var_specs$obs),!!sym(var_specs$time),x=!!sym(x)) %>%
+    select(!!sym(var_specs$observation), t=!!sym(var_specs$time), x=!!sym(x)) %>%
     inner_join(data %>%
                  filter(!(!!sym(var_specs$death))) %>%
-                 mutate(t=t+1), # put x(t+1) on the same row as x(t), z1(t), z2(t) etc.
-               by=c(var_specs$obs, var_specs$time)) %>%
-    select(-!!sym(var_specs$obs), -!!sym(var_specs$time), -!!sym(var_specs$death))
+                 mutate(t = !!sym(var_specs$time)+1), # put x(t+1) on the same row as x(t), z1(t), z2(t) etc.
+               by=c(var_specs$observation, "t")) %>%
+    select(-!!sym(var_specs$observation), -t, -!!sym(var_specs$death))
 }
 
 honest_sd = function(model, data) { # get an honest estimate of the sd that isn't biased by overfitting
@@ -105,13 +115,8 @@ honest_sd = function(model, data) { # get an honest estimate of the sd that isn'
   }
 }
 
-add_element = function(obj, ...) {
-  obj_class = class(obj)
-  obj = c(obj, ...)
-  class(obj) = obj_class
-  return(obj)
-}
-
+# names of columns in the DF are not internally renamed so that users can see these models and inspect them
+# with reference to the variable names they know
 make_model = function(data, model_specs, var_specs) {
   model_specs %>% imap(function(model_spec, var_name) {
     if (class(model_spec)[[1]] == "static") {
@@ -143,11 +148,11 @@ sample_from = function(model, data) {
   }
 }
 
-build_sampler = function(model, var_specs, death_levels) {
+build_sampler = function(model, var_specs, dead_level) {
   model = model # weird but doesn't work without this.
   function(data, treat_plan, var_specs) {
     data_next = data # takes care of carry-over unless otherwise specified
-    dead_index = (data[[var_specs$death]]==death_levels$dead) # only bother predicting for those still alive
+    dead_index = (data[[var_specs$death]]==dead_level) # only bother predicting for those still alive
     data_next[[var_specs$cost]][dead_index] = 0 # dead cost 0
     data_next[[var_specs$treatment]] = treat_plan(data) # assign treatment
     if (all(dead_index)) {
