@@ -113,7 +113,7 @@ modeling_data = function(data, var_name, var_specs, dead) {
   data %>%
     select(!!sym(observation), t=!!sym(time), x=!!sym(var_name)) %>%
     inner_join(data %>%
-                 filter(!!sym(death) != dead) %>% # keep the live patients
+                 filter(!(!!sym(death))) %>% # keep the live patients
                  mutate(t = !!sym(time)+1), # put x(t+1) on the same row as x(t), z1(t), z2(t) etc.
       by=c(observation, "t")) %>%
     select(-!!sym(observation), -t, -!!sym(death))
@@ -133,7 +133,8 @@ make_model = function(spec, data) {
         add_element(sd=honest_sd(., model_data))
     } else {
       model_spec %>%
-        fit(x~., mutate(model_data, x=as_factor(x)))
+        fit(x~., mutate(model_data, x=as_factor(x))) %>%
+        add_element(lgl=is.logical(model_data$x))
     }
   })
 }
@@ -141,22 +142,26 @@ make_model = function(spec, data) {
 sample_from = function(model, data) {
   n = length(data[[1]])
   if (model$spec$mode == "regression") {
-    rnorm(n,
+    x = rnorm(n,
       mean = predict(model, data) %>%
         pull(.pred),
       sd = model$sd)
   } else {
-    rcategorical(n,
+    x = rcategorical(n, # rcategorical will give a char in general (so it can fit in an array)
       p = predict(model, data, type="prob") %>%
         rename_all(str_extract, "(?<=_).*$"))
+    if (model$lgl) { # convert prediction back to lgl if that's what it should be
+      x = as.logical(x)
+    }
   }
+  return(x)
 }
 
 build_sampler = function(model, var_specs, dead_level) {
   model = model # weird but doesn't work without this.
   function(data, treat_plan, var_specs) {
     data_next = data # takes care of carry-over unless otherwise specified
-    dead_index = (data[[var_specs$death]]==dead_level) # only bother predicting for those still alive
+    dead_index = data[[var_specs$death]] # only bother predicting for those still alive. Note that the
     data_next[[var_specs$cost]][dead_index] = 0 # dead cost 0
     data_next[[var_specs$treatment]] = treat_plan(data) # assign treatment
     if (all(dead_index)) {

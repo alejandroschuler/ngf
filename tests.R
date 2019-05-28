@@ -72,10 +72,10 @@ true_delta = list(
 
 plan(multiprocess)
 tic()
-delta = ngf_cost_spec(var_specs, model_specs, dead_level="TRUE") %>%
-  estimate(data, treat_all, treat_none, B=100, n=1000)
+delta = ngf_cost_spec(var_specs, model_specs) %>%
+  estimate(data, treat_all, treat_none, B=8, n=100)
 toc()
 
-# spec = ngf_cost_spec(var_specs, model_specs, dead_level="TRUE")
+# spec = ngf_cost_spec(var_specs, model_specs)
 # fit_model = spec %>% fit(data)
 # pred = fit_model %>% predict(treat_none, n=100)

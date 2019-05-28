@@ -20,10 +20,12 @@ make_var_spec = function(time=NULL, observation=NULL, covariates=NULL, treatment
 }
 
 validate_ngf_cost_spec = function(spec = list()) {
-  spec$vars = exec(make_var_spec, !!!(spec$vars)) # checks that the right variables are here and named correctly
+  # checks that the right variables are here and named correctly
+  spec$vars = exec(make_var_spec, !!!(spec$vars))
   needed_model_names = spec$vars %>%
     extract(!(names(.) %in% c("time","observation","treatment"))) %>%
     unlist()
+  # make some default model specs if not given
   if (is.null(spec$models)) {
     warning("No model specification provided. Defaulting to GLMs")
     spec$models = list(
@@ -43,25 +45,31 @@ new_ngf_cost_spec = function(x = list()) {
   structure(x, class="ngf_cost_spec")
 }
 
-ngf_cost_spec = function(var_spec, model_spec=NULL, dead_level=NULL) {
+ngf_cost_spec = function(var_spec, model_spec=NULL) {
   list(
     vars=var_spec,
-    models=model_spec,
-    dead=dead_level) %>%
+    models=model_spec) %>%
   validate_ngf_cost_spec() %>% # checks
   new_ngf_cost_spec() # classes the list
 }
 
 check_data = function(spec, data) {
+  data[[spec$vars$death]] = as.logical(data[[spec$vars$death]])
   data = data %>%
-    mutate_if(negate(is.numeric), as.character)
+    mutate_if(is.factor, as.character)
 
-  death_col = data %>%
-    arrange(!!sym(spec$vars$time)) %>%
-    pull(spec$vars$death)
-  if (length(unique(death_col)) > 2) {
-    rlang::abort("Death column has more than two unique values")
+  if (any(is.na(data))) {
+    rlang::abort("NAs detected in the data, possibly due to conversion of death column to logical")
   }
+
+  any_dead_at_t0 = data %>%
+    filter(!!sym(spec$vars$time)==min(!!sym(spec$vars$time))) %>%
+    pull(spec$vars$death) %>%
+    any()
+  if(any_dead_at_t0) {
+    rlang::warn("Some patients are already dead at the first time point. Check your data")
+  }
+
   cost_col = data %>%
     pull(spec$vars$cost)
   if (!is.numeric(cost_col)) {
@@ -70,14 +78,6 @@ check_data = function(spec, data) {
 
   if (any(!(unlist(spec$vars) %in% names(data)))) {
     rlang::abort("Some variables in the variable spec are not found as column names in the data")
-  }
-
-  if (is.null(spec$dead)) {
-    rlang::warn("No death level provided, guessing based on data")
-    life_level = first(death_col)
-    spec$dead = unique(death_col) %>%
-      purrr::discard(~equals(.,life_level))  %>%
-      as.character()
   }
 
   # guess model specs for covariates  based on data type
@@ -104,7 +104,7 @@ fit.ngf_cost_spec = function(spec, data) {
   transition_model = spec %>%
     make_model(data)
   transition_sampler = transition_model %>%
-    build_sampler(spec$vars, spec$dead)
+    build_sampler(spec$vars)
   t0_data = data %>%
     filter(!!sym(spec$vars$time)==min(!!sym(spec$vars$time))) %>%
     select(spec$vars %$% c(covariates, treatment, death, cost))
