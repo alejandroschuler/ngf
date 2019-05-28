@@ -65,15 +65,17 @@ true_delta = list(
     model=NULL,
     sampler=true_transition_sampler,
     t0_data=make_true_init(100000),
-    var_spec=var_specs,
+    vars=var_specs,
     t_max=24) %>%
   structure(class = "ngf_cost_fit") %>%
   causal_contrast(treat_all, treat_none, n=10000)
 
-# try with RF for all models
 plan(multiprocess)
 tic()
 delta = ngf_cost_spec(var_specs, model_specs, dead_level="TRUE") %>%
   estimate(data, treat_all, treat_none, B=100, n=1000)
 toc()
 
+# spec = ngf_cost_spec(var_specs, model_specs, dead_level="TRUE")
+# fit_model = spec %>% fit(data)
+# pred = fit_model %>% predict(treat_none, n=100)

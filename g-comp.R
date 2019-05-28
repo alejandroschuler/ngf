@@ -82,16 +82,6 @@ sim_data = function(data, transition_sampler, treat_plan) {
     reduce(inner_join, by=c("t","obs"))
 }
 
-modeling_data = function(data, x, var_specs) {
-  data %>%
-    select(!!sym(var_specs$observation), t=!!sym(var_specs$time), x=!!sym(x)) %>%
-    inner_join(data %>%
-                 filter(!(!!sym(var_specs$death))) %>%
-                 mutate(t = !!sym(var_specs$time)+1), # put x(t+1) on the same row as x(t), z1(t), z2(t) etc.
-               by=c(var_specs$observation, "t")) %>%
-    select(-!!sym(var_specs$observation), -t, -!!sym(var_specs$death))
-}
-
 honest_sd = function(model, data) { # get an honest estimate of the sd that isn't biased by overfitting
   if (model$spec$engine == "glm" | model$spec$engine == "lm") {
     return(sigma(model$fit))
@@ -115,14 +105,28 @@ honest_sd = function(model, data) { # get an honest estimate of the sd that isn'
   }
 }
 
+modeling_data = function(data, var_name, var_specs, dead) {
+  var_specs %>%
+    flatten() %$%
+    c(time, observation, death) %->%
+    c(time, observation, death) # these are the vars we're looking for
+  data %>%
+    select(!!sym(observation), t=!!sym(time), x=!!sym(var_name)) %>%
+    inner_join(data %>%
+                 filter(!!sym(death) != dead) %>% # keep the live patients
+                 mutate(t = !!sym(time)+1), # put x(t+1) on the same row as x(t), z1(t), z2(t) etc.
+      by=c(observation, "t")) %>%
+    select(-!!sym(observation), -t, -!!sym(death))
+}
+
 # names of columns in the DF are not internally renamed so that users can see these models and inspect them
 # with reference to the variable names they know
-make_model = function(data, model_specs, var_specs) {
-  model_specs %>% imap(function(model_spec, var_name) {
+make_model = function(spec, data) {
+  spec$models %>% imap(function(model_spec, var_name) {
     if (class(model_spec)[[1]] == "static") {
       return(model_spec)
     }
-    model_data = modeling_data(data, var_name, var_specs)
+    model_data = modeling_data(data, var_name, spec$vars, spec$dead)
     if (model_spec$mode == "regression") {
       model_spec %>%
         fit(x~., model_data) %>%
@@ -170,7 +174,7 @@ build_sampler = function(model, var_specs, dead_level) {
 cost = function(data, var_specs) {
   data %>%
     group_by(t) %>%
-    summarize(Y_monthly_mean = mean(!!sym(var_specs$cost))) %>%
-    pull(Y_monthly_mean) %>%
+    summarize(cost_monthly_mean = mean(!!sym(var_specs$cost))) %>%
+    pull(cost_monthly_mean) %>%
     sum()
 }

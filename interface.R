@@ -19,23 +19,23 @@ make_var_spec = function(time=NULL, observation=NULL, covariates=NULL, treatment
     purrr::discard(is.null)
 }
 
-validate_ngf_cost_spec = function(x = list()) {
-  x$var_spec = exec(make_var_spec, !!!(x$var_spec)) # checks that the right variables are here and named correctly
-  needed_model_names = x$var_spec %>%
+validate_ngf_cost_spec = function(spec = list()) {
+  spec$vars = exec(make_var_spec, !!!(spec$vars)) # checks that the right variables are here and named correctly
+  needed_model_names = spec$vars %>%
     extract(!(names(.) %in% c("time","observation","treatment"))) %>%
     unlist()
-  if (is.null(x$model_spec)) {
+  if (is.null(spec$models)) {
     warning("No model specification provided. Defaulting to GLMs")
-    x$model_spec = list(
+    spec$models = list(
       logistic_reg() %>% set_engine("glm"),
       linear_reg() %>% set_engine("lm")) %>%
-    set_names(x$var_spec[c("death","cost")])
+    set_names(spec$vars[c("death","cost")])
   }
   # check mode of death is classification and mode of cost is regression
-  if (any(!(names(x$model_spec) %in% unlist(x$var_spec)))) {
+  if (any(!(names(spec$models) %in% unlist(spec$vars)))) {
     rlang::abort("Variables in the model spec are not identified in the variable spec")
   }
-  x
+  return(spec)
 }
 
 new_ngf_cost_spec = function(x = list()) {
@@ -44,77 +44,82 @@ new_ngf_cost_spec = function(x = list()) {
 }
 
 ngf_cost_spec = function(var_spec, model_spec=NULL, dead_level=NULL) {
-  obj = new_ngf_cost_spec(list(
-    var_spec=var_spec,
-    model_spec=model_spec,
-    dead_level=dead_level))
-  validate_ngf_cost_spec(obj)
+  list(
+    vars=var_spec,
+    models=model_spec,
+    dead=dead_level) %>%
+  validate_ngf_cost_spec() %>% # checks
+  new_ngf_cost_spec() # classes the list
 }
 
-check_data = function(spec_obj, data) {
+check_data = function(spec, data) {
+  data = data %>%
+    mutate_if(negate(is.numeric), as.character)
+
   death_col = data %>%
-    pull(spec_obj$var_spec$death)
+    arrange(!!sym(spec$vars$time)) %>%
+    pull(spec$vars$death)
   if (length(unique(death_col)) > 2) {
     rlang::abort("Death column has more than two unique values")
   }
   cost_col = data %>%
-    pull(spec_obj$var_spec$cost)
+    pull(spec$vars$cost)
   if (!is.numeric(cost_col)) {
     rlang::abort("Cost column is not numeric")
   }
 
-  if (any(!(unlist(spec_obj$var_spec) %in% names(data)))) {
+  if (any(!(unlist(spec$vars) %in% names(data)))) {
     rlang::abort("Some variables in the variable spec are not found as column names in the data")
   }
 
-  if (is.null(spec_obj$dead_level)) {
+  if (is.null(spec$dead)) {
     rlang::warn("No death level provided, guessing based on data")
     life_level = first(death_col)
-    spec_obj$dead_level = unique(death_col) %>%
+    spec$dead = unique(death_col) %>%
       purrr::discard(~equals(.,life_level))  %>%
       as.character()
   }
 
   # guess model specs for covariates  based on data type
-  for (covariate in spec_obj$var_spec$covariates) {
-    if (is.null(spec_obj$model_spec[[covariate]])) {
+  for (covariate in spec$vars$covariates) {
+    if (is.null(spec$models[[covariate]])) {
       rlang::warn(str_c("No model spec provided for ", covariate))
       if (is.numeric(data[[covariate]]))  {
         rlang::warn("Defaulting to linear regression based on datatype")
-        spec_obj$model_spec[[covariate]] = linear_reg() %>% set_engine("lm")
+        spec$models[[covariate]] = linear_reg() %>% set_engine("lm")
       } else {
         rlang::warn("Defaulting to logistic regression based on datatype")
         # Make sure this works for multiclass regression?
-        spec_obj$model_spec[[covariate]] = logistic_reg() %>% set_engine("glm")
+        spec$models[[covariate]] = logistic_reg() %>% set_engine("glm")
       }
     }
   }
 
-  return(spec_obj)
+  list(spec, data)
 }
 
-fit.ngf_cost_spec = function(obj, data) {
-  obj = check_data(obj, data)
+fit.ngf_cost_spec = function(spec, data) {
+  c(spec, data) %<-% check_data(spec, data)
 
-  transition_model = data %>%
-    make_model(obj$model_spec, obj$var_spec)
+  transition_model = spec %>%
+    make_model(data)
   transition_sampler = transition_model %>%
-    build_sampler(obj$var_spec, obj$dead_level)
+    build_sampler(spec$vars, spec$dead)
   t0_data = data %>%
-    filter(!!sym(obj$var_spec$time)==min(!!sym(obj$var_spec$time))) %>%
-    select(obj$var_spec %$% c(covariates, treatment, death, cost))
+    filter(!!sym(spec$vars$time)==min(!!sym(spec$vars$time))) %>%
+    select(spec$vars %$% c(covariates, treatment, death, cost))
   structure(
     list(model=transition_model, sampler=transition_sampler,
-         t0_data=t0_data, var_spec=obj$var_spec,
-         t_max=length(unique(data[[obj$var_spec$time]]))),
+         t0_data=t0_data, vars=spec$vars,
+         t_max=length(unique(data[[spec$vars$time]]))),
     class = "ngf_cost_fit")
 }
 
-predict.ngf_cost_fit = function(obj, policy, t_max=obj$t_max, ...) {
-  obj$t0_data %>%
+predict.ngf_cost_fit = function(fit_model, policy, t_max=fit_model$t_max, ...) {
+  fit_model$t0_data %>%
     prep_sim_data(t_max, ...) %>%
-    sim_data(obj$sampler, policy) %>%
-    cost(obj$var_spec)
+    sim_data(fit_model$sampler, policy) %>%
+    cost(fit_model$vars)
 }
 
 causal_contrast = function(model, treat, control, ...) {
@@ -136,7 +141,7 @@ estimate = function(spec, data, treat, control, B=100, alpha=0.95, ...) {
 
   boot_est = 1:B %>%
     future_map_dbl(function(b) {
-        fit(spec, boot_sample(data, spec$var_spec$obs)) %>%
+        fit(spec, boot_sample(data, spec$vars$observation)) %>%
         causal_contrast(treat, control, ...)
     })
   list(
