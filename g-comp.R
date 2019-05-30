@@ -37,7 +37,8 @@ rcategorical = function(n, p) { # returns a character vector (more portable than
 }
 
 matrix_to_df = function(data_matrix, name) {
-  as_tibble(data_matrix) %>%
+  quietly(as_tibble)(data_matrix) %$%
+    result %>%
     set_names(str_c("t",1:ncol(.),sep="_")) %>%
     mutate(obs=1:nrow(.)) %>%
     gather(t, !!name, -obs) %>%
@@ -116,13 +117,13 @@ modeling_data = function(data, var_name, var_specs, dead) {
                  filter(!(!!sym(death))) %>% # keep the live patients
                  mutate(t = !!sym(time)+1), # put x(t+1) on the same row as x(t), z1(t), z2(t) etc.
       by=c(observation, "t")) %>%
-    select(-!!sym(observation), -t, -!!sym(death))
+    select(-!!sym(observation), -t, -!!sym(time), -!!sym(death))
 }
 
 # names of columns in the DF are not internally renamed so that users can see these models and inspect them
 # with reference to the variable names they know
 make_model = function(spec, data) {
-  spec$models %>% imap(function(model_spec, var_name) {
+  spec$models %>% future_imap(function(model_spec, var_name) {
     if (class(model_spec)[[1]] == "static") {
       return(model_spec)
     }

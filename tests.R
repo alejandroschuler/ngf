@@ -1,7 +1,7 @@
 source("g-comp.R")
 source("interface.R")
 
-##### DGP ####
+##### DGP #####
 make_true_init = function(n=100) {
   tibble(
     disease= rep(0, n),
@@ -28,13 +28,13 @@ true_transition_sampler = function(data, treat_plan, var_specs) {
   data_next
 }
 
-##### Testing data ####
+##### Testing data #####
 
 data = make_true_init(1000) %>% # 1000 patients
   prep_sim_data(24) %>% # for 24 months
   sim_data(true_transition_sampler, natural_treatment)
 
-##### Testing code
+##### Inputs  #####
 
 model_specs = list(
   disease = rand_forest() %>%
@@ -61,6 +61,8 @@ var_specs=make_var_spec(
 treat_all = function(data) rep(1,length(data[[1]]))
 treat_none = function(data) rep(0,length(data[[1]]))
 
+##### Tests #####
+
 true_delta = list(
     model=NULL,
     sampler=true_transition_sampler,
@@ -73,7 +75,7 @@ true_delta = list(
 plan(multiprocess)
 tic()
 delta = ngf_cost_spec(var_specs, model_specs) %>%
-  estimate(data, treat_all, treat_none, B=8, n=100)
+  estimate(data, treat_all, treat_none, B=8, n=100, t_max=12)
 toc()
 
 # spec = ngf_cost_spec(var_specs, model_specs)

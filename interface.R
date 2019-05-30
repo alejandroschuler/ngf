@@ -26,12 +26,13 @@ validate_ngf_cost_spec = function(spec = list()) {
     extract(!(names(.) %in% c("time","observation","treatment"))) %>%
     unlist()
   # make some default model specs if not given
-  if (is.null(spec$models)) {
-    warning("No model specification provided. Defaulting to GLMs")
-    spec$models = list(
-      logistic_reg() %>% set_engine("glm"),
-      linear_reg() %>% set_engine("lm")) %>%
-    set_names(spec$vars[c("death","cost")])
+  if (is.null(spec$models[[spec$vars$cost]])) {
+    warning("No model specification provided for cost model. Defaulting to linear regression")
+    spec$models[[spec$vars$cost]] = linear_reg() %>% set_engine("lm")
+  }
+  if (is.null(spec$models[[spec$vars$death]])) {
+    warning("No model specification provided for death. Defaulting to logisitc regression")
+    spec$models[[spec$vars$death]] = logistic_reg() %>% set_engine("glm")
   }
   # check mode of death is classification and mode of cost is regression
   if (any(!(names(spec$models) %in% unlist(spec$vars)))) {
@@ -77,6 +78,8 @@ check_data = function(spec, data) {
   }
 
   if (any(!(unlist(spec$vars) %in% names(data)))) {
+    print(unlist(spec$vars))
+    print(names(data))
     rlang::abort("Some variables in the variable spec are not found as column names in the data")
   }
 
