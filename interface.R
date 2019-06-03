@@ -40,12 +40,10 @@ validate_ngf_cost_spec = function(spec = list()) {
   }
   return(spec)
 }
-
 new_ngf_cost_spec = function(x = list()) {
   stopifnot(is.list(x))
   structure(x, class="ngf_cost_spec")
 }
-
 ngf_cost_spec = function(var_spec, model_spec=NULL) {
   list(
     vars=var_spec,
@@ -54,11 +52,7 @@ ngf_cost_spec = function(var_spec, model_spec=NULL) {
   new_ngf_cost_spec() # classes the list
 }
 
-check_data = function(spec, data) {
-  data[[spec$vars$death]] = as.logical(data[[spec$vars$death]])
-  data = data %>%
-    mutate_if(is.factor, as.character)
-
+check_input = function(spec, data) {
   if (any(is.na(data))) {
     rlang::abort("NAs detected in the data, possibly due to conversion of death column to logical")
   }
@@ -101,8 +95,14 @@ check_data = function(spec, data) {
   list(spec, data)
 }
 
-fit.ngf_cost_spec = function(spec, data) {
-  c(spec, data) %<-% check_data(spec, data)
+fit.ngf_cost_spec = function(spec, data, check=T) {
+  data[[spec$vars$death]] = as.logical(data[[spec$vars$death]])
+  data = data %>%
+    mutate_if(is.factor, as.character)
+
+  if (check) {
+    c(spec, data) %<-% check_input(spec, data)
+  }
 
   transition_model = spec %>%
     make_model(data)
@@ -113,7 +113,7 @@ fit.ngf_cost_spec = function(spec, data) {
     select(spec$vars %$% c(covariates, treatment, death, cost))
   structure(
     list(model=transition_model, sampler=transition_sampler,
-         t0_data=t0_data, vars=spec$vars,
+         t0_data=t0_data, vars=spec$vars, spec=spec,
          t_max=length(unique(data[[spec$vars$time]]))),
     class = "ngf_cost_fit")
 }
@@ -137,20 +137,26 @@ boot_sample = function(data, obs_var) {
     left_join(data, by=obs_var)
 }
 
-estimate = function(spec, data, treat, control, B=100, alpha=0.95, ...) {
-  delta = spec %>%
-    fit(data) %>%
+boot_ci = function(delta, boot_est, alpha) {
+  2*delta - quantile(boot_est, (1+c(-alpha, alpha))/2) %>%
+      set_names(rev(names(.)))
+}
+
+estimate = function(fit_model, data, treat, control, B=100, alpha=0.95, ...) {
+  delta = fit_model %>%
     causal_contrast(treat, control, ...)
 
   boot_est = 1:B %>%
     future_map_dbl(function(b) {
-        fit(spec, boot_sample(data, spec$vars$observation)) %>%
+        fit(fit_model$spec, boot_sample(data, fit_model$vars$observation), check=F) %>%
         causal_contrast(treat, control, ...)
     })
   list(
+    boot_est = boot_est,
     estimate = delta,
-    conf_int = 2*delta - quantile(boot_est, (1+c(-alpha, alpha))/2) %>%
-      set_names(rev(names(.)))
+    conf_int = boot_ci(delta, boot_est, alpha)
   )
 }
+
+
 

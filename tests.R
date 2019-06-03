@@ -59,6 +59,7 @@ var_specs=make_var_spec(
 
 # make the definition of these functions clearer
 treat_all = function(data) rep(1,length(data[[1]]))
+treat_rand = function(timestep_data) rbinom(length(timestep_data[[1]]), 1, 0.25)
 treat_none = function(data) rep(0,length(data[[1]]))
 
 ##### Tests #####
@@ -70,12 +71,13 @@ true_delta = list(
     vars=var_specs,
     t_max=24) %>%
   structure(class = "ngf_cost_fit") %>%
-  causal_contrast(treat_all, treat_none, n=10000)
+  causal_contrast(treat_rand, treat_none, n=10000, t_max=12)
 
 plan(multiprocess)
 tic()
 delta = ngf_cost_spec(var_specs, model_specs) %>%
-  estimate(data, treat_all, treat_none, B=8, n=100, t_max=12)
+  fit(data) %>%
+  estimate(data, treat_rand, treat_none, B=8, n=100, t_max=12)
 toc()
 
 # spec = ngf_cost_spec(var_specs, model_specs)
