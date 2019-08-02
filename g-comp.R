@@ -120,6 +120,30 @@ modeling_data = function(data, var_name, var_specs, dead) {
     select(-!!sym(observation), -t, -!!sym(time), -!!sym(death))
 }
 
+trim_glm = function(fit) {
+  fit$y = c()
+  fit$model = c()
+  
+  fit$residuals = c()
+  fit$fitted.values = c()
+  fit$effects = c()
+  fit$qr$qr = c()  
+  fit$linear.predictors = c()
+  fit$weights = c()
+  fit$prior.weights = c()
+  fit$data = c()
+  
+  fit$family$variance = c()
+  fit$family$dev.resids = c()
+  fit$family$aic = c()
+  fit$family$validmu = c()
+  fit$family$simulate = c()
+  attr(fit$terms,".Environment") = c()
+  attr(fit$formula,".Environment") = c()
+  
+  fit
+}
+
 # names of columns in the DF are not internally renamed so that users can see these models and inspect them
 # with reference to the variable names they know
 make_model = function(spec, data) {
@@ -129,27 +153,33 @@ make_model = function(spec, data) {
     }
     model_data = modeling_data(data, var_name, spec$vars, spec$dead)
     if (model_spec$mode == "regression") {
-      model_spec %>%
+      model = model_spec %>%
         fit(x~., model_data) %>%
         add_element(sd=honest_sd(., model_data))
     } else {
-      model_spec %>%
+      model = model_spec %>%
         fit(x~., mutate(model_data, x=as_factor(x))) %>%
         add_element(lgl=is.logical(model_data$x))
     }
+    if (model$spec$engine %in% c("lm","glm")) {
+        model$fit = trim_glm(model$fit)
+    }
+    return(model)
   })
 }
 
 sample_from = function(model, data) {
   n = length(data[[1]])
   if (model$spec$mode == "regression") {
+    stuff = quietly(predict)(model, data)
     x = rnorm(n,
-      mean = predict(model, data) %>%
+      mean = stuff$result %>%
         pull(.pred),
       sd = model$sd)
   } else {
+    stuff = quietly(predict)(model, data, type="prob")
     x = rcategorical(n, # rcategorical will give a char in general (so it can fit in an array)
-      p = predict(model, data, type="prob") %>%
+      p = stuff$result %>%
         rename_all(str_extract, "(?<=_).*$"))
     if (model$lgl) { # convert prediction back to lgl if that's what it should be
       x = as.logical(x)
